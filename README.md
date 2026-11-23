@@ -1,7 +1,8 @@
 # Solmar Bay
 
-[![make.fun bounty](https://img.shields.io/badge/make.fun-gta6--01-blue)](https://make.fun/bounty/gta6-01)
-[![repo](https://img.shields.io/badge/github-astutiseksi%2Fsolmar--bay-181717)](https://github.com/astutiseksi/solmar-bay)
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/astutiseksi/solmar-bay/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/astutiseksi/solmar-bay/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
 An original open-world crime game for the make.fun **gta6-01** bounty — a
 2D top-down city you explore on foot and by car, built from scratch with
