@@ -68,10 +68,14 @@ game, 2D top-down canvas, zero dependencies, zero network, all files under
   over CDP by a Node script (`/tmp/playtest.mjs`); `/opt/meta-chromium/
   chrome` refuses to start here (Hatch WebGL domain policy error).
 
-## Push
+## Push — DONE 2026-11-23 ~13:45 WIB
 
-- Batch 1 (text files, incl. this STATUS.md): _pending — see below_.
-- Batch 2 (vendor/makefun-game.ts + shots.json): _pending_.
+- Batch 1 (24 text files: main.ts, serve.ts, README.md, LICENSE, STATUS.md,
+  shots.json, .gitignore, .makefun/owner.json, game/index.html, 15×
+  game/src/*.js): commit `000126042f8ce6387cc28d5f01c089929565e9e3`
+  (approved by Dian).
+- Batch 2 (vendor/makefun-game.ts): commit
+  `0a1b2ef7bf1bc46b13214ae5312d63bbd3aad804` — **HEAD** (approved by Dian).
 - Screenshots (`screenshots/*.jpg`, binary) are NOT pushed via
   push_files (UTF-8 only) — they are uploaded via browser by the parent
   after the push. Local paths:
