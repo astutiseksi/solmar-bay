@@ -1,92 +1,78 @@
-// Pedestrians: office workers, beach-goers, dock hands and tourists who
-// stroll the sidewalks, chat, and run screaming from gunfire and speeding
-// cars. Some are mission fares; the rest just make the city feel alive.
-import { WORLD, ROADS_X, ROADS_Y, ROAD_W } from './config.js';
-import { collideBuildings, clampToWorld } from './world.js';
+// pedestrians.js — people on the sidewalks: stroll between intersections,
+// flee gunfire and speeding cars, and stand as taxi fares during Night Cab.
 
-const NAMES = ['Mara', 'Tomas', 'Iris', 'Kiko', 'Rosa', 'Felix', 'Nadia', 'Omar', 'Luz', 'Benny', 'Cora', 'Dante'];
-const SHIRTS = ['#e5534b', '#4fc3f7', '#f2c94c', '#8bc34a', '#ff8a65', '#ba68c8', '#fff176', '#4db6ac', '#f06292', '#90a4ae'];
+import { WORLD, TUNE } from './config.js';
+import { range, intRange, pick, chance } from './random.js';
+import { onRoad, nearestRoad } from './world.js';
 
-export function makePed(rng, x, y) {
-  const axis = rng.chance(0.5) ? 'h' : 'v';
-  const road = axis === 'h' ? rng.pick(ROADS_Y) : rng.pick(ROADS_X);
-  return {
-    name: rng.pick(NAMES),
-    x, y,
-    angle: rng.range(0, Math.PI * 2),
-    speed: rng.range(45, 75),
-    state: 'walk', // walk | flee | fare | dead
-    axis, road, dir: rng.chance(0.5) ? 1 : -1,
-    shirt: rng.pick(SHIRTS),
-    skin: rng.pick(['#f2c9a0', '#d9a06b', '#a06b3f', '#8a5a2e']),
-    panic: 0, wait: rng.range(0, 3),
-    fare: null,
-  };
-}
+const SHIRTS = ['#d85a5a', '#5a8fd8', '#5ad88a', '#d8c95a', '#b45ad8', '#e08a3c', '#7ad8d0', '#d8d8d8'];
 
-export function createPeds(rng) {
+export function spawnPeds(rng, world, count) {
   const peds = [];
-  for (let i = 0; i < 46; i += 1) {
-    const axis = rng.chance(0.5) ? 'h' : 'v';
-    const road = axis === 'h' ? rng.pick(ROADS_Y) : rng.pick(ROADS_X);
-    const s = rng.range(200, axis === 'h' ? 4600 : 3300);
-    const off = ROAD_W / 2 + 12 + rng.range(0, 14);
-    const x = axis === 'h' ? s : road + (rng.chance(0.5) ? off : -off);
-    const y = axis === 'h' ? road + (rng.chance(0.5) ? off : -off) : s;
-    peds.push(makePed(rng, x, y));
+  for (let i = 0; i < count; i++) {
+    const axis = chance(rng, 0.5) ? 'v' : 'h';
+    let x, y;
+    if (axis === 'v') { x = pick(rng, world.roadsV) + (chance(rng, 0.5) ? -52 : 52); y = range(rng, 400, WORLD.h - 400); }
+    else { y = pick(rng, world.roadsH) + (chance(rng, 0.5) ? -52 : 52); x = range(rng, 600, WORLD.w - 400); }
+    peds.push({
+      x, y, angle: range(rng, 0, Math.PI * 2), speed: range(rng, 40, 80),
+      shirt: pick(rng, SHIRTS), state: 'walk', target: null, hp: 30, dead: false,
+      panic: 0, fare: false, waitT: 0,
+    });
   }
   return peds;
 }
 
-export function scarePeds(G, x, y, radius) {
-  for (const p of G.peds) {
-    if (p.state === 'dead' || p.fare) continue;
-    const d = Math.hypot(p.x - x, p.y - y);
-    if (d < radius) { p.state = 'flee'; p.panic = 2.5; p.fleeX = x; p.fleeY = y; }
-  }
-}
-
-export function updatePed(G, p, dt) {
-  if (p.state === 'dead') return;
-  if (p.panic > 0) p.panic -= dt;
-  if (p.state === 'flee') {
-    const dx = p.x - (p.fleeX ?? G.player.x);
-    const dy = p.y - (p.fleeY ?? G.player.y);
-    const d = Math.hypot(dx, dy) || 1;
-    p.angle = Math.atan2(dy, dx);
-    p.x += (dx / d) * 190 * dt;
-    p.y += (dy / d) * 190 * dt;
-    if (p.panic <= 0) p.state = 'walk';
-  } else if (p.state === 'fare') {
-    // Waiting for the taxi: stand still, wave.
-    p.wait += dt;
-    return;
-  } else {
-    if (p.wait > 0) { p.wait -= dt; return; }
-    const step = p.speed * p.dir * dt;
-    if (p.axis === 'h') {
-      p.x += step;
-      p.angle = p.dir > 0 ? 0 : Math.PI;
-      if (p.x < 180 || p.x > WORLD.width - 620) { p.dir *= -1; p.wait = 1; }
+export function updatePeds(S, dt) {
+  const px = S.player.x, py = S.player.y;
+  for (const p of S.peds) {
+    if (p.dead) continue;
+    // Flee: gunfire nearby, or a fast car bearing down.
+    if (p.panic > 0) {
+      p.panic -= dt;
+      p.state = 'flee';
+      const dx = p.x - px, dy = p.y - py, d = Math.hypot(dx, dy) || 1;
+      p.angle = Math.atan2(dy / d, dx / d);
+      p.speed = 190;
     } else {
-      p.y += step;
-      p.angle = p.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
-      if (p.y < 180 || p.y > WORLD.height - 220) { p.dir *= -1; p.wait = 1; }
+      p.state = p.fare ? 'wait' : 'walk';
+      p.speed = p.fare ? 0 : range(S.rng, 50, 70);
+      if (!p.target || Math.hypot(p.target.x - p.x, p.target.y - p.y) < 24) {
+        p.target = randomSidewalkTarget(S);
+        p.angle = Math.atan2(p.target.y - p.y, p.target.x - p.x);
+      }
     }
-    // At an intersection, sometimes turn down the crossing street.
-    const crossing = (p.axis === 'h' ? ROADS_X : ROADS_Y).find((r) => Math.abs((p.axis === 'h' ? p.x : p.y) - r) < 5);
-    if (crossing !== undefined && G.rng.chance(0.01)) {
-      p.axis = p.axis === 'h' ? 'v' : 'h';
-      p.road = crossing;
-      p.dir = G.rng.chance(0.5) ? 1 : -1;
-      if (p.axis === 'h') p.y = p.road + (p.dir > 0 ? ROAD_W / 2 + 12 : -ROAD_W / 2 - 12);
-      else p.x = p.road + (p.dir > 0 ? ROAD_W / 2 + 12 : -ROAD_W / 2 - 12);
+    if (p.state !== 'wait') {
+      const nx = p.x + Math.cos(p.angle) * p.speed * dt;
+      const ny = p.y + Math.sin(p.angle) * p.speed * dt;
+      // Stay on sidewalks: refuse to walk deep into a block.
+      if (!onRoad(S.world, nx, ny) && Math.hypot(nx - p.x, ny - p.y) > 0) {
+        const near = nearestRoad(S.world, nx, ny);
+        if (near && near.dist < 90) { p.x = nx; p.y = ny; }
+        else { p.target = randomSidewalkTarget(S); }
+      } else { p.x = nx; p.y = ny; }
     }
+    p.x = Math.max(60, Math.min(WORLD.w - 60, p.x));
+    p.y = Math.max(60, Math.min(WORLD.h - 60, p.y));
   }
-  collideBuildings(G.city.buildings, p, 12);
-  clampToWorld(p, 30);
 }
 
-export function updatePeds(G, dt) {
-  for (const p of G.peds) updatePed(G, p, dt);
+function randomSidewalkTarget(S) {
+  const w = S.world;
+  const axis = chance(S.rng, 0.5) ? 'v' : 'h';
+  if (axis === 'v') return { x: pick(S.rng, w.roadsV) + (chance(S.rng, 0.5) ? -52 : 52), y: range(S.rng, 400, WORLD.h - 400) };
+  return { x: range(S.rng, 600, WORLD.w - 400), y: pick(S.rng, w.roadsH) + (chance(S.rng, 0.5) ? -52 : 52) };
+}
+
+// Everyone nearby panics when a shot is fired or a car screams past.
+export function scarePeds(S, x, y, radius) {
+  for (const p of S.peds) {
+    if (p.dead) continue;
+    if (Math.hypot(p.x - x, p.y - y) < radius) p.panic = 2.5 + S.rng() * 1.5;
+  }
+}
+
+// Cash that pops out of a downed ped, picked up on foot.
+export function dropCash(S, x, y, amount) {
+  S.pickups.push({ kind: 'cash', x, y, amount, t: 0 });
 }

@@ -1,7 +1,8 @@
-// A tiny static server for game/ (Node 22, standard library only), so an entry can be played
-// locally without a build step: `node serve.ts` serves game/ on http://localhost:8080.
-// It sends the MIME types a browser game needs, refuses any path outside game/, and otherwise
-// does nothing clever: this is a development convenience, not a web server for the internet.
+// serve.ts — a tiny static server for game/ (Node 22, standard library
+// only), so the entry can be played locally without a build step:
+// `node serve.ts` serves game/ on http://localhost:8080. It sends the MIME
+// types a browser game needs, refuses any path outside game/, and otherwise
+// does nothing clever: a development convenience, not a public web server.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -26,14 +27,6 @@ const MIME: Record<string, string> = {
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-  '.glb': 'model/gltf-binary',
-  '.gltf': 'model/gltf+json',
-  '.bin': 'application/octet-stream',
-  '.wasm': 'application/wasm',
-  '.wav': 'audio/wav',
-  '.mp3': 'audio/mpeg',
-  '.ogg': 'audio/ogg',
   '.txt': 'text/plain; charset=utf-8',
 };
 

@@ -1,113 +1,101 @@
-// The screenshot scenes behind ?shot=start|play|chase|heist. Each one plays
-// the real rules forward from a fresh world for a fixed number of steps,
-// steered by a simple autopilot, so every frame is what a short game really
-// looks like and the same seed always gives the same frame.
-import { STEP, ROADS_X, ROADS_Y } from './config.js';
-import { startMission, missionTarget } from './missions.js';
-import { stepGame } from './engine.js';
-import { nearestCar } from './vehicles.js';
-import { nearestRoadPoint } from './world.js';
+// shots.js — staged screenshot scenes for ?shot=start|play|chase|heist.
+// Each scene sets the game up (player position, car, wanted level, mission)
+// and drives an autopilot along the road grid so the render is a real frame
+// of the game playing by its own rules. Sets window.__shotReady when done.
 
-/** Manhattan route along the street grid: nearest road, then one turn. */
-function routeTo(G, tx, ty) {
-  const n = nearestRoadPoint(G.player.x, G.player.y);
-  const vx = ROADS_X.reduce((a, b) => (Math.abs(b - tx) < Math.abs(a - tx) ? b : a));
-  const hy = ROADS_Y.reduce((a, b) => (Math.abs(b - ty) < Math.abs(a - ty) ? b : a));
-  const pts = [{ x: n.x, y: n.y }];
-  if (n.axis === 'h') { pts.push({ x: vx, y: n.y }); pts.push({ x: vx, y: hy }); }
-  else { pts.push({ x: n.x, y: hy }); pts.push({ x: vx, y: hy }); }
-  pts.push({ x: tx, y: ty });
+import { TUNE } from './config.js';
+import { shopByKind, nearestRoad } from './world.js';
+import { makeCar } from './vehicles.js';
+import { CAR_MODELS } from './config.js';
+
+export function setupShot(S, name) {
+  S.shotMode = true;
+  const W = S.world;
+  const p = S.player;
+  if (name === 'start') {
+    // Title screen over the beach at golden hour.
+    p.x = 600; p.y = 1900;
+    S.screen = 'title';
+    S.clock = 17 * 60 + 12;
+    S.view.cam.x = p.x; S.view.cam.y = p.y;
+    S.shotDone = true;
+    window.__shotReady = true;
+    return;
+  }
+  S.screen = 'play';
+  S.clock = name === 'heist' ? 20 * 60 + 30 : 17 * 60 + 12;
+  if (name === 'play') {
+    // Milo on foot in Downtown, traffic passing, mission 1 briefing up.
+    p.x = 2400; p.y = 1000; p.aim = 0.3;
+    S.missions.index = 0; S.missions.active = true;
+    S.missions.dialog = { who: 'Lena Cruz', text: 'Milo, you need wheels. Steal any car on the street and bring it to the Garage. Keep it clean.', title: '1 — Fresh Wheels' };
+    S.missions.marker = { x: 2600, y: 1000, label: 'Garage' };
+    S.auto = { route: gridRoute(S, 2400, 1000, 3400, 1000), i: 0 };
+  } else if (name === 'chase') {
+    // Milo driving a Sunrunner with 3 stars and two cop cars behind him.
+    const model = CAR_MODELS.find((m) => m.name === 'Sunrunner');
+    const car = makeCar(model, 2400, 2200, 0, { id: 777 });
+    S.cars.push(car);
+    p.car = car; p.inCar = true; p.x = car.x; p.y = car.y;
+    p.wanted = 3; p.lastSeen = S.time;
+    S.missions.index = 3; S.missions.active = true;
+    S.missions.banner = 'Hot Pursuit — lose 3 stars!';
+    S.bannerT = 999;
+    for (let i = 0; i < 2; i++) {
+      const cop = makeCar(CAR_MODELS.find((m) => m.police), 2400 - 160 - i * 90, 2200 + (i ? 24 : -24), 0, { police: true, id: 900 + i });
+      cop.speed = 300;
+      S.cars.push(cop);
+    }
+    S.auto = { route: gridRoute(S, 2400, 2200, 4600, 2200), i: 0 };
+  } else if (name === 'heist') {
+    // The Big Score: Milo on foot outside the Bank at night, vault marker up.
+    const bank = shopByKind(W, 'bank');
+    p.x = bank.x + 120; p.y = bank.y + 160; p.aim = -Math.PI / 2;
+    p.weapon = 'pistol';
+    S.missions.index = 5; S.missions.active = true;
+    S.missions.marker = { x: bank.x, y: bank.y, label: 'Bank vault' };
+    S.missions.banner = 'The Big Score — crack the vault';
+    S.bannerT = 999;
+    p.money = 1250;
+  }
+  S.auto = S.auto || null;
+  S.shotFrames = 0;
+  S.shotTarget = name === 'start' ? 5 : 150;
+}
+
+// Drive the player's car along road grid waypoints toward a destination.
+function gridRoute(S, x0, y0, x1, y1) {
+  const pts = [];
+  const roadY = nearestRoad(S.world, x0, y0).axis === 'h' ? nearestRoad(S.world, x0, y0).at : S.world.roadsH[1];
+  pts.push({ x: x0, y: roadY });
+  pts.push({ x: x1, y: roadY });
+  pts.push({ x: x1, y: y1 });
   return pts;
 }
 
-function makeAutopilot(G) {
-  let waypoints = null;
-  let wpIndex = 0;
-  return () => {
-    const p = G.player;
-    const target = missionTarget(G);
-    const tx = target ? target.x : 2220;
-    const ty = target ? target.y : 1460;
-    if (!waypoints || Math.hypot(tx - waypoints[waypoints.length - 1].x, ty - waypoints[waypoints.length - 1].y) > 120) {
-      waypoints = routeTo(G, tx, ty);
-      wpIndex = 0;
-    }
-    while (wpIndex < waypoints.length - 1 && Math.hypot(waypoints[wpIndex].x - p.x, waypoints[wpIndex].y - p.y) < 80) wpIndex += 1;
-    const wp = waypoints[Math.min(wpIndex, waypoints.length - 1)];
-    const dx = wp.x - p.x;
-    const dy = wp.y - p.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < 26) return { axis: { x: 0, y: 0 }, run: false, actions: 0, mouseDown: false };
-    if (p.car) {
-      const want = Math.atan2(dy, dx);
-      let diff = want - p.angle;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      const throttle = Math.abs(diff) > 1.1 ? 0.25 : 1;
-      return { axis: { x: Math.max(-1, Math.min(1, diff * 2.4)), y: -throttle }, run: false, actions: 0, mouseDown: false };
-    }
-    return { axis: { x: dx / dist, y: dy / dist }, run: true, actions: 0, mouseDown: false };
-  };
+// Called each frame in shot mode: steer the car (or walk) toward the route.
+export function autopilot(S, dt, input) {
+  if (!S.auto) return;
+  const p = S.player;
+  const target = S.auto.route[S.auto.i];
+  if (!target) { S.auto = null; return; }
+  const dx = target.x - p.x, dy = target.y - p.y, d = Math.hypot(dx, dy);
+  if (d < 50) { S.auto.i++; return; }
+  const want = Math.atan2(dy, dx);
+  const heading = p.inCar && p.car ? p.car.angle : p.aim;
+  let diff = want - heading;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  // Feed synthetic keys into the input set.
+  input.keys.add('KeyW');
+  if (diff > 0.12) input.keys.add('KeyA'); else if (diff < -0.12) input.keys.add('KeyD');
+  if (Math.abs(diff) > 1.2) input.keys.delete('KeyW');
 }
 
-function driveFor(G, seconds, wantCar) {
-  const pilot = makeAutopilot(G);
-  const steps = Math.floor(seconds / STEP);
-  for (let i = 0; i < steps; i += 1) {
-    if (wantCar && !G.player.car) {
-      const car = nearestCar(G, 400);
-      if (car) G.enterCar(car);
-    }
-    stepGame(G, STEP, pilot());
-    if (G.screen !== 'play') break;
+// Marks the scene ready once enough frames have simulated.
+export function shotTick(S) {
+  S.shotFrames = (S.shotFrames || 0) + 1;
+  if (S.shotFrames >= (S.shotTarget || 150)) {
+    if (!S.shotDone) { S.shotDone = true; window.__shotReady = true; }
   }
-}
-
-function putPlayerInCar(G, x, y) {
-  G.player.x = x; G.player.y = y;
-  const car = nearestCar(G, 10000);
-  if (car) { car.x = x; car.y = y; car.angle = 0; G.enterCar(car); }
-}
-
-export function stageShot(name, G) {
-  G.reset();
-  G.screen = 'play';
-  if (name === 'chase') {
-    // Mission 4: three stars, cop cars closing in, racing for the safehouse.
-    putPlayerInCar(G, 2820, 2000);
-    startMission(G, 3);
-    G.wanted = 3;
-    driveFor(G, 8, false);
-    G.banner('LOSE THE COPS — reach the safehouse!', '#ff5a4d');
-    return { screen: 'play' };
-  }
-  if (name === 'heist') {
-    // Mission 6 at the bank: vault cracked, alarm up, four stars.
-    putPlayerInCar(G, 1020, 460);
-    startMission(G, 5);
-    G.mission.step = 2; // past the vault hold: alarm raised
-    G.wanted = 4;
-    G.money = 12480;
-    G.stats.missions = 5;
-    driveFor(G, 8, false);
-    G.banner('THE BIG SCORE — escape to the safehouse!', '#ffd94d');
-    return { screen: 'play' };
-  }
-  if (name === 'play') {
-    // Mission 1: fresh wheels, driving downtown with the minimap and HUD live.
-    putPlayerInCar(G, 420, 920);
-    startMission(G, 0);
-    G.money = 1240;
-    driveFor(G, 3.5, false);
-    return { screen: 'play' };
-  }
-  // start: title over a living city.
-  G.screen = 'title';
-  for (let i = 0; i < 5 / STEP; i += 1) {
-    G.time += STEP;
-    G.hour = (17.2 + (G.time / 480) * 24) % 24;
-    G.camera.x = 2400 + Math.sin(G.time / 20) * 420;
-    G.camera.y = 1600 + Math.cos(G.time / 26) * 320;
-  }
-  return { screen: 'title' };
 }

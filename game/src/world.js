@@ -1,148 +1,130 @@
-// Solmar Bay itself: a seeded street grid, building blocks, the beach and
-// sea on the east, the harbour south-west, a central park, shops, the
-// safehouse, the hospital and the hidden packages. Also the geometry
-// helpers every moving thing uses (road checks, building collisions).
-import { WORLD, ROADS_X, ROADS_Y, ROAD_W, BEACH, SEA, HARBOUR, PALETTE, DISTRICTS, COLLECTIBLE_COUNT } from './config.js';
+// world.js — generates the seeded city: road grid, building blocks, beach and
+// sea, park, harbour, named shops, hidden packages, lamps and palms. Also the
+// collision queries the rest of the game uses.
 
-const SHOPS = [
-  { name: 'Lena\'s Garage', type: 'garage', x: 2220, y: 920, label: 'GARAGE' },
-  { name: 'Solmar Bank', type: 'bank', x: 1020, y: 380, label: 'BANK' },
-  { name: 'Harbor Docks', type: 'docks', x: 700, y: 3200, label: 'DOCKS' },
-  { name: 'Palm Motel', type: 'motel', x: 4620, y: 1460, label: 'MOTEL' },
-  { name: 'St. Mercy Hospital', type: 'hospital', x: 2820, y: 2540, label: 'HOSPITAL' },
-  { name: 'Bayview Safehouse', type: 'safehouse', x: 3420, y: 3080, label: 'SAFEHOUSE' },
-  { name: 'Neon Diner', type: 'diner', x: 1620, y: 2000, label: 'DINER' },
-  { name: 'Ammu-Nation', type: 'ammo', x: 2220, y: 2540, label: 'AMMO' },
-];
+import { WORLD, DISTRICTS, PALETTE, TUNE } from './config.js';
+import { range, intRange, pick, chance } from './random.js';
 
-export function districtAt(x, y) {
-  for (const d of DISTRICTS) if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d.name;
-  return 'Solmar Bay';
-}
+export function generateWorld(rng) {
+  const world = {
+    roadsV: [], roadsH: [], buildings: [], shops: [], packages: [],
+    trees: [], lamps: [], park: null, sea: null, piers: [],
+  };
+  // Road centre lines: vertical every 400 px starting at 600, horizontal same.
+  for (let x = 600; x < WORLD.w - 200; x += WORLD.roadGap) world.roadsV.push(x);
+  for (let y = 600; y < WORLD.h - 200; y += WORLD.roadGap) world.roadsH.push(y);
+  // Beach + sea on the west edge, harbour piers on the east edge.
+  world.sea = { x: 0, y: 0, w: WORLD.beachX - 60, h: WORLD.h };
+  world.beach = { x: WORLD.beachX - 60, y: 0, w: 60, h: WORLD.h };
+  for (let i = 0; i < 3; i++) world.piers.push({ x: WORLD.w - 40, y: 1900 + i * 420, w: 40, h: 90 });
+  // Central park between the middle roads.
+  world.park = { x: 2200, y: 1500, w: 800, h: 600 };
 
-export function buildCity(rng) {
-  const buildings = [];
-  const trees = [];
-  const palms = [];
-  const lamps = [];
-  // One building (or a small row) per city block, leaving the park block free.
-  for (let xi = 0; xi < ROADS_X.length - 1; xi += 1) {
-    for (let yi = 0; yi < ROADS_Y.length - 1; yi += 1) {
-      const x0 = ROADS_X[xi] + ROAD_W / 2 + 26;
-      const x1 = ROADS_X[xi + 1] - ROAD_W / 2 - 26;
-      const y0 = ROADS_Y[yi] + ROAD_W / 2 + 26;
-      const y1 = ROADS_Y[yi + 1] - ROAD_W / 2 - 26;
-      const isPark = xi === 3 && yi === 2;
-      if (isPark) {
-        for (let t = 0; t < 14; t += 1) trees.push({ x: rng.range(x0, x1), y: rng.range(y0, y1), r: rng.range(9, 15) });
-        continue;
-      }
-      if (x0 > BEACH.x0) continue; // beach blocks stay open
-      const bw = (x1 - x0) / 2 - 14;
-      const bh = (y1 - y0) / 2 - 14;
-      for (let b = 0; b < 4; b += 1) {
-        const bx = x0 + (b % 2) * ((x1 - x0) / 2) + 7;
-        const by = y0 + Math.floor(b / 2) * ((y1 - y0) / 2) + 7;
-        if (rng.chance(0.12)) { // plaza / parking lot instead of a building
-          for (let t = 0; t < 3; t += 1) trees.push({ x: rng.range(bx, bx + bw), y: rng.range(by, by + bh), r: rng.range(8, 12) });
-          continue;
+  // Buildings fill every block between roads (skipping park, beach, harbour).
+  const shopDefs = [
+    { name: 'Garage', kind: 'garage' }, { name: 'Bank', kind: 'bank' },
+    { name: 'Docks', kind: 'docks' }, { name: 'Motel', kind: 'motel' },
+    { name: 'Hospital', kind: 'hospital' }, { name: 'Safehouse', kind: 'safehouse' },
+    { name: 'Diner', kind: 'diner' }, { name: 'Ammo', kind: 'ammo' },
+  ];
+  let shopIdx = 0;
+  const blockXs = [WORLD.beachX + 40, ...world.roadsV.map((x) => x + WORLD.roadHalf)];
+  const blockYs = [40, ...world.roadsH.map((y) => y + WORLD.roadHalf)];
+  const blockXe = [...world.roadsV.map((x) => x - WORLD.roadHalf), WORLD.w - 40];
+  const blockYe = [...world.roadsH.map((y) => y - WORLD.roadHalf), WORLD.h - 40];
+  for (let bi = 0; bi < blockXs.length; bi++) {
+    for (let bj = 0; bj < blockYs.length; bj++) {
+      const bx = blockXs[bi], by = blockYs[bj], bw = blockXe[bi] - bx, bh = blockYe[bj] - by;
+      if (bw < 120 || bh < 120) continue;
+      if (rectsOverlap({ x: bx, y: by, w: bw, h: bh }, world.park)) continue;
+      if (bx + bw > 3750 && by > 1400) continue; // harbour yards stay open
+      // 1-3 buildings per block, with a margin for the sidewalk.
+      const n = intRange(rng, 1, 3);
+      for (let k = 0; k < n; k++) {
+        const w = range(rng, 90, Math.min(220, bw - 30));
+        const h = range(rng, 80, Math.min(200, bh - 30));
+        const x = bx + range(rng, 12, Math.max(13, bw - w - 12));
+        const y = by + range(rng, 12, Math.max(13, bh - h - 12));
+        const b = { x, y, w, h, hgt: intRange(rng, 1, 4), color: pick(rng, [PALETTE.building, PALETTE.building2, '#5d4a63', '#74604f']), lit: [] };
+        for (let wi = 0; wi < Math.floor(w / 34); wi++)
+          for (let wj = 0; wj < Math.floor(h / 34); wj++)
+            if (chance(rng, 0.45)) b.lit.push({ dx: 8 + wi * 34, dy: 8 + wj * 34 });
+        world.buildings.push(b);
+        // First buildings in distinct districts become named shops.
+        if (shopIdx < shopDefs.length && chance(rng, 0.5)) {
+          const def = shopDefs[shopIdx++];
+          const shop = { ...def, x: b.x + b.w / 2, y: b.y + b.h + 26, bx: b.x, by: b.y, bw: b.w, bh: b.h };
+          world.shops.push(shop);
         }
-        buildings.push({
-          x: bx, y: by, w: bw * rng.range(0.75, 1), h: bh * rng.range(0.7, 1),
-          color: rng.pick(PALETTE.building), roof: rng.pick(PALETTE.roof),
-          floors: rng.int(1, 5), district: districtAt(bx + bw / 2, by + bh / 2),
-        });
       }
+      // Trees / palms sprinkled on blocks and along the beach.
+      if (chance(rng, 0.6)) world.trees.push({ x: bx + range(rng, 20, bw - 20), y: by + range(rng, 20, bh - 20), palm: chance(rng, 0.5) });
     }
   }
-  // Palms along the beach, trees on sidewalks, lamps at intersections.
-  for (let y = 120; y < WORLD.height; y += 170) palms.push({ x: rng.range(BEACH.x0 + 14, BEACH.x1 - 10), y, r: 12 });
-  for (let i = 0; i < 90; i += 1) {
-    const rx = rng.pick(ROADS_X); const ry = rng.pick(ROADS_Y);
-    trees.push({ x: rx + rng.range(-260, 260), y: ry + ROAD_W / 2 + 14, r: rng.range(8, 13) });
+  // Any shop defs not placed get a spot on a downtown block edge.
+  const fallbackSpots = [[1000, 1000], [2600, 600], [4600, 2600], [1000, 3000], [3000, 3200], [4200, 600], [1800, 2600], [3400, 1800]];
+  while (shopIdx < shopDefs.length) {
+    const def = shopDefs[shopIdx++];
+    const s = fallbackSpots[shopIdx % fallbackSpots.length];
+    world.shops.push({ ...def, x: s[0], y: s[1], bx: s[0] - 60, by: s[1] - 60, bw: 120, bh: 120 });
   }
-  for (const rx of ROADS_X) for (const ry of ROADS_Y) lamps.push({ x: rx + ROAD_W / 2 - 8, y: ry - ROAD_W / 2 + 8 });
-
-  const collectibles = [];
-  for (let i = 0; i < COLLECTIBLE_COUNT; i += 1) {
-    collectibles.push({
-      x: rng.range(300, 4600), y: rng.range(300, 3300),
-      taken: false, bob: rng.range(0, 6.28),
-    });
+  // Lamps at road intersections.
+  for (const x of world.roadsV) for (const y of world.roadsH) world.lamps.push({ x: x + WORLD.roadHalf - 6, y: y - WORLD.roadHalf + 6 });
+  // Hidden packages: tucked against buildings and along the beach.
+  for (let i = 0; i < TUNE.hiddenPackages; i++) {
+    const b = pick(rng, world.buildings);
+    world.packages.push({ x: b.x + range(rng, -14, b.w + 14), y: b.y + b.h + range(rng, 4, 22), taken: false });
   }
-  // Keep collectibles out of buildings and water.
-  for (const c of collectibles) {
-    let guard = 0;
-    while ((pointInBuilding(buildings, c.x, c.y) || c.x > BEACH.x0 || (c.x < HARBOUR.x1 && c.y > HARBOUR.y0)) && guard < 40) {
-      c.x = rng.range(300, 4600); c.y = rng.range(300, 3300); guard += 1;
-    }
-  }
-  const shops = SHOPS.map((s) => ({ ...s }));
-  return { buildings, trees, palms, lamps, collectibles, shops, park: { x0: ROADS_X[3] + 60, y0: ROADS_Y[2] + 60, x1: ROADS_X[4] - 60, y1: ROADS_Y[3] - 60 } };
+  return world;
 }
 
-export function pointInBuilding(buildings, x, y) {
-  for (const b of buildings) if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return b;
-  return null;
+export function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-/** Push a circle out of every building it overlaps; returns the building hit. */
-export function collideBuildings(buildings, e, r) {
-  let hit = null;
-  for (const b of buildings) {
+// Is a circle (x, y, r) blocked by a building, or outside the playable area?
+export function hitsBuilding(world, x, y, r) {
+  if (x < WORLD.beachX - 50 || x > WORLD.w - 20 || y < 20 || y > WORLD.h - 20) return true;
+  for (const b of world.buildings) {
+    if (x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h) return true;
+  }
+  return false;
+}
+
+// Push a circle out of buildings; returns true if a collision happened.
+export function resolveCollision(world, e, r) {
+  let hit = false;
+  for (const b of world.buildings) {
     const cx = Math.max(b.x, Math.min(e.x, b.x + b.w));
     const cy = Math.max(b.y, Math.min(e.y, b.y + b.h));
-    const dx = e.x - cx; const dy = e.y - cy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < r * r && d2 > 0.01) {
-      const d = Math.sqrt(d2);
+    const dx = e.x - cx, dy = e.y - cy, d2 = dx * dx + dy * dy;
+    if (d2 < r * r) {
+      hit = true;
+      const d = Math.sqrt(d2) || 0.01;
       e.x = cx + (dx / d) * r; e.y = cy + (dy / d) * r;
-      hit = b;
-    } else if (d2 <= 0.01) {
-      e.y = b.y - r; hit = b; // centre inside: push out the top
     }
   }
   return hit;
 }
 
-export function clampToWorld(e, margin) {
-  e.x = Math.max(margin, Math.min(WORLD.width - margin, e.x));
-  e.y = Math.max(margin, Math.min(WORLD.height - margin, e.y));
-}
-
-/** True when the point is on asphalt (a road), ignoring sidewalks. */
-export function isOnRoad(x, y) {
-  if (x > BEACH.x0) return false;
-  for (const rx of ROADS_X) if (Math.abs(x - rx) < ROAD_W / 2) return true;
-  for (const ry of ROADS_Y) if (Math.abs(y - ry) < ROAD_W / 2) return true;
-  return false;
-}
-
-export function nearestRoadPoint(x, y) {
-  let best = null; let bd = Infinity;
-  for (const rx of ROADS_X) {
-    const d = Math.abs(x - rx);
-    if (d < bd) { bd = d; best = { x: rx, y, axis: 'v', road: rx }; }
-  }
-  for (const ry of ROADS_Y) {
-    const d = Math.abs(y - ry);
-    if (d < bd) { bd = d; best = { x, y: ry, axis: 'h', road: ry }; }
-  }
+export function nearestRoad(world, x, y) {
+  let best = null, bd = 1e9;
+  for (const rx of world.roadsV) { const d = Math.abs(x - rx); if (d < bd) { bd = d; best = { axis: 'v', at: rx, dist: d }; } }
+  for (const ry of world.roadsH) { const d = Math.abs(y - ry); if (d < bd) { bd = d; best = { axis: 'h', at: ry, dist: d }; } }
   return best;
 }
 
-/** Daylight factor 0..1 from the in-game hour (5:30 sunrise, 19:30 sunset). */
-export function daylight(hour) {
-  if (hour < 5.5 || hour > 19.5) return 0.12;
-  if (hour < 7) return 0.12 + ((hour - 5.5) / 1.5) * 0.88;
-  if (hour > 18) return 1 - ((hour - 18) / 1.5) * 0.88;
-  return 1;
+export function shopByKind(world, kind) { return world.shops.find((s) => s.kind === kind); }
+export function onRoad(world, x, y) {
+  return world.roadsV.some((rx) => Math.abs(x - rx) < WORLD.roadHalf) ||
+    world.roadsH.some((ry) => Math.abs(y - ry) < WORLD.roadHalf);
 }
 
-export function formatClock(hour) {
-  const h = Math.floor(hour) % 24;
-  const m = Math.floor((hour % 1) * 60);
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+// Night darkness factor 0 (day) .. 1 (deep night) from clock minutes.
+export function darknessAt(clockMin) {
+  const h = (clockMin / 60) % 24;
+  if (h >= 7 && h < 17) return 0;
+  if (h >= 17 && h < 19.5) return (h - 17) / 2.5 * 0.55;
+  if (h >= 19.5 || h < 5) return 0.75;
+  return (7 - h) / 2 * 0.75;
 }
-
-export { SEA, BEACH, HARBOUR };

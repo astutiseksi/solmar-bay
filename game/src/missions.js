@@ -1,235 +1,198 @@
-// The story: Milo Reyes, fresh out of the Solmar Bay marina jail, works
-// for fixer Lena Cruz to pay off a debt — and ends up pulling the biggest
-// score the city has ever seen. Six missions, played in order, each a
-// small state machine of steps (go to, pick up, deliver, collect, escape).
-import { makePed } from './pedestrians.js';
+// missions.js — the six story missions, run as a small state machine.
+// Each mission has a briefing, a sequence of steps with a marker position,
+// and a payout. Steps complete by reaching markers, driving a taxi fare,
+// collecting crates, or surviving a wanted level.
 
-function shop(G, type) {
-  return G.city.shops.find((s) => s.type === type);
-}
+import { TUNE } from './config.js';
+import { shopByKind } from './world.js';
+import { addWanted } from './police.js';
+import { makeCar } from './vehicles.js';
+import { CAR_MODELS } from './config.js';
 
-export const MISSIONS = [
-  {
-    id: 'fresh-wheels', title: 'Fresh Wheels', giver: 'Lena Cruz',
-    briefing: 'Lena: "Out already? Good. I need wheels — any wheels. Jack a car and bring it to my garage. Don\'t scratch it... much."',
-    reward: 150,
-    steps: [
-      { type: 'steal', text: 'Steal a car (walk up and press E)' },
-      { type: 'goto', at: (G) => shop(G, 'garage'), text: 'Drive the car to Lena\'s Garage' },
-    ],
-  },
-  {
-    id: 'package-run', title: 'Package Run', giver: 'Lena Cruz',
-    briefing: 'Lena: "Three packages, three drop-offs, and the clock is ticking. The buyers don\'t like waiting — and neither do I."',
-    reward: 300, timer: 170,
-    steps: [
-      { type: 'goto', at: (G) => ({ x: 1020, y: 1460 }), text: 'Pick up the packages at the Old Town corner' },
-      { type: 'goto', at: (G) => ({ x: 3420, y: 920 }), text: 'Deliver to the Hills overlook' },
-      { type: 'goto', at: (G) => ({ x: 4620, y: 2540 }), text: 'Deliver to Palm Beach' },
-      { type: 'goto', at: (G) => ({ x: 1620, y: 3080 }), text: 'Deliver to the Marina market' },
-    ],
-  },
-  {
-    id: 'night-cab', title: 'Night Cab', giver: 'Benny the Dispatcher',
-    briefing: 'Benny: "Two fares waiting, driver. Pick them up, drop them off, keep the meter running. Tips are yours."',
-    reward: 250,
-    steps: [
-      { type: 'fare', at: (G) => ({ x: 2220, y: 1460 }), dest: (G) => ({ x: 4020, y: 920 }), text: 'Pick up the fare at Downtown, drop them at the Hills' },
-      { type: 'fare', at: (G) => ({ x: 2820, y: 2000 }), dest: (G) => ({ x: 4620, y: 2000 }), text: 'Pick up the fare at the Marina, drop them at Palm Beach' },
-    ],
-  },
-  {
-    id: 'hot-pursuit', title: 'Hot Pursuit', giver: 'Lena Cruz',
-    briefing: 'Lena: "The cops know your face now. Lose them — three stars and counting — then lay low at the safehouse."',
-    reward: 400,
-    steps: [
-      { type: 'wanted', stars: 3, text: 'Get the cops\' attention — wanted level 3' },
-      { type: 'escape', at: (G) => shop(G, 'safehouse'), text: 'Escape the police and reach the Bayview Safehouse' },
-    ],
-  },
-  {
-    id: 'harbor-job', title: 'The Harbor Job', giver: 'Dante "The Crane"',
-    briefing: 'Dante: "Four crates on the docks, fresh off a freighter. Grab them all. The harbor crew is... uncooperative."',
-    reward: 600,
-    steps: [
-      { type: 'collect', count: 4, at: (G) => shop(G, 'docks'), radius: 320, text: 'Collect 4 crates at the Harbor Docks' },
-      { type: 'goto', at: (G) => shop(G, 'garage'), text: 'Bring the crates back to Lena\'s Garage' },
-    ],
-  },
-  {
-    id: 'the-big-score', title: 'The Big Score', giver: 'Lena Cruz',
-    briefing: 'Lena: "Solmar Bank. One vault, one crew, one shot. Grab the cash, outrun the whole department, and we\'re free."',
-    reward: 1500,
-    steps: [
-      { type: 'goto', at: (G) => shop(G, 'bank'), text: 'Get to Solmar Bank' },
-      { type: 'hold', seconds: 6, text: 'Crack the vault — hold position!' },
-      { type: 'wanted', stars: 4, text: 'The alarm is up — wanted level 4!' },
-      { type: 'escape', at: (G) => shop(G, 'safehouse'), text: 'Escape to the Bayview Safehouse with the cash' },
-    ],
-  },
+const BRIEFINGS = [
+  { title: '1 — Fresh Wheels', who: 'Lena Cruz', text: 'Milo, you need wheels. Steal any car on the street and bring it to the Garage. Keep it clean.' },
+  { title: '2 — Package Run', who: 'Lena Cruz', text: 'Three drops, one clock. Deliver the packages to the markers before time runs out. Drive like you mean it.' },
+  { title: '3 — Night Cab', who: 'Benny the Dispatcher', text: 'The cab is yours tonight. Pick up two fares waiting on the sidewalk and drop them where they point.' },
+  { title: '4 — Hot Pursuit', who: 'Dante "The Crane"', text: 'The cops are onto you, Milo. Three stars. Lose them — outrun, hide, survive. No shortcuts.' },
+  { title: '5 — The Harbor Job', who: 'Dante "The Crane"', text: 'Four crates on the docks, Harbor district. Grab them all and get back to the Safehouse. Quietly.' },
+  { title: '6 — The Big Score', who: 'Lena Cruz', text: 'The Bank. Crack the vault, grab the score, and shake four stars. Do this and you are King of Solmar Bay.' },
 ];
 
-export function startMission(G, index) {
-  const def = MISSIONS[index];
-  if (!def) return;
-  G.mission = {
-    index, def, step: 0, timer: def.timer || 0,
-    hold: 0, collected: 0, crates: [],
-    farePed: null, fareState: 'pickup',
-    dialog: def.briefing, dialogTimer: 7,
-    state: 'active',
+export function createMissions(S) {
+  return {
+    index: 0, step: 0, timer: 0, active: false, done: false, won: false,
+    marker: null, crates: [], fares: [], dialog: null, banner: null,
   };
-  if (def.id === 'harbor-job') {
-    const docks = shop(G, 'docks');
-    for (let i = 0; i < 4; i += 1) {
-      G.mission.crates.push({
-        x: docks.x + G.rng.range(-220, 220),
-        y: docks.y + G.rng.range(-160, 160),
-        taken: false,
-      });
-    }
-  }
-  if (def.id === 'night-cab') spawnFare(G);
-  G.banner(`Mission: ${def.title}`, '#ffd94d');
-  G.audio.mission();
 }
 
-function spawnFare(G) {
-  const step = currentStep(G);
-  if (!step) return;
-  const at = step.at(G);
-  const ped = makePed(G.rng, at.x + 30, at.y + 30);
-  ped.state = 'fare';
-  ped.shirt = '#f2c94c';
-  G.peds.push(ped);
-  G.mission.farePed = ped;
-  G.mission.fareState = 'pickup';
+export function startMission(S) {
+  const M = S.missions;
+  const def = BRIEFINGS[M.index];
+  M.active = true; M.step = 0; M.dialog = { who: def.who, text: def.text, title: def.title };
+  M.banner = def.title;
+  S.audio.mission();
+  setupMissionStep(S);
 }
 
-export function currentStep(G) {
-  if (!G.mission || G.mission.state !== 'active') return null;
-  return G.mission.def.steps[G.mission.step] || null;
-}
-
-export function missionTarget(G) {
-  const step = currentStep(G);
-  if (!step) return null;
-  if (step.type === 'collect') {
-    const left = G.mission.crates.find((c) => !c.taken);
-    return left ? { x: left.x, y: left.y, label: `Crates ${G.mission.collected}/${step.count}` } : null;
-  }
-  if (step.type === 'fare') {
-    const pos = G.mission.fareState === 'pickup' ? step.at(G) : step.dest(G);
-    return { x: pos.x, y: pos.y, label: G.mission.fareState === 'pickup' ? 'Pick up the fare' : 'Drop off the fare' };
-  }
-  if (step.type === 'steal' || step.type === 'wanted') return null;
-  if (step.type === 'hold') return { x: G.player.x, y: G.player.y, label: 'Hold position!' };
-  const at = step.at(G);
-  return at ? { x: at.x, y: at.y, label: step.text } : null;
-}
-
-function advance(G) {
-  G.mission.step += 1;
-  G.mission.hold = 0;
-  G.audio.pickup();
-  if (G.mission.step >= G.mission.def.steps.length) completeMission(G);
-  else if (currentStep(G)?.type === 'fare') spawnFare(G);
-}
-
-function completeMission(G) {
-  const def = G.mission.def;
-  G.money += def.reward;
-  G.stats.missions += 1;
-  G.stats.earned += def.reward;
-  G.mission.state = 'done';
-  G.banner(`Mission complete: ${def.title}  +$${def.reward}`, '#7ee081');
-  G.audio.cash();
-  G.saveGame();
-  if (G.mission.index + 1 < MISSIONS.length) {
-    setTimeout(() => { if (G.screen === 'play') startMission(G, G.mission.index + 1); }, 2500);
-  } else {
-    G.screen = 'won';
-    G.audio.mission();
-  }
-}
-
-function failMission(G, reason) {
-  G.mission.state = 'failed';
-  G.banner(`Mission failed: ${reason}`, '#ff5a4d');
-  G.audio.fail();
-  setTimeout(() => { if (G.screen === 'play') startMission(G, G.mission.index); }, 2500);
-}
-
-export function updateMission(G, dt) {
-  const m = G.mission;
-  if (!m || m.state !== 'active') return;
-  if (m.timer > 0) {
-    m.timer -= dt;
-    if (m.timer <= 0) { failMission(G, 'Out of time'); return; }
-  }
-  const step = currentStep(G);
-  if (!step) return;
-  const p = G.player;
-  const near = (x, y, r) => Math.hypot(p.x - x, p.y - y) < r;
-  if (step.type === 'steal') {
-    if (p.car) advance(G);
-  } else if (step.type === 'goto') {
-    const at = step.at(G);
-    if (near(at.x, at.y, 70)) advance(G);
-  } else if (step.type === 'wanted') {
-    if (G.wanted >= step.stars) advance(G);
-    else if (m.def.id === 'the-big-score') { /* alarm raises it in hold step */ }
-  } else if (step.type === 'escape') {
-    const at = step.at(G);
-    if (near(at.x, at.y, 80) && G.wanted === 0) advance(G);
-    else if (near(at.x, at.y, 80) && G.wanted > 0) {
-      m.dialog = 'Lay low nearby until the heat dies down, then slip inside.';
-      m.dialogTimer = 3;
-    }
-  } else if (step.type === 'hold') {
-    const bank = shop(G, 'bank');
-    if (near(bank.x, bank.y, 90)) {
-      m.hold += dt;
-      if (m.hold >= step.seconds) {
-        G.money += 200;
-        G.wanted = Math.max(G.wanted, 4);
-        G.banner('Vault open! The alarm is screaming — RUN!', '#ff5a4d');
-        G.audio.fail();
-        advance(G);
+export function setupMissionStep(S) {
+  const M = S.missions;
+  const W = S.world;
+  const garage = shopByKind(W, 'garage');
+  const bank = shopByKind(W, 'bank');
+  const docks = shopByKind(W, 'docks');
+  const safehouse = shopByKind(W, 'safehouse');
+  switch (M.index) {
+    case 0: // Fresh Wheels: steal a car, then drive to the garage.
+      M.marker = M.step === 0 ? null : { x: garage.x, y: garage.y, label: 'Garage' };
+      break;
+    case 1: // Package Run: 3 timed deliveries.
+      M.timer = 150;
+      M.marker = deliverySpot(S, M.step);
+      break;
+    case 2: // Night Cab: 2 fares.
+      if (M.step === 0) spawnFare(S);
+      break;
+    case 3: // Hot Pursuit: gain 3 stars, then lose them.
+      if (M.step === 0) { addWanted(S, 3); M.marker = null; }
+      break;
+    case 4: // Harbor Job: 4 crates near the docks.
+      if (M.step === 0) {
+        M.crates = [];
+        for (let i = 0; i < 4; i++) M.crates.push({ x: docks.x + (i % 2) * 120 - 60, y: docks.y + 120 + Math.floor(i / 2) * 120, taken: false });
+        M.marker = M.crates[0];
       }
-    } else m.hold = Math.max(0, m.hold - dt * 2);
-  } else if (step.type === 'collect') {
-    for (const c of m.crates) {
-      if (!c.taken && near(c.x, c.y, 46)) {
-        c.taken = true;
-        m.collected += 1;
-        G.audio.pickup();
-        G.addParticles(c.x, c.y, 8, '#ffd94d');
-        if (G.wanted < 2 && m.collected === 2) G.commitCrime(1, 'stealing crates');
-        if (m.collected >= step.count) advance(G);
-        break;
-      }
-    }
-  } else if (step.type === 'fare') {
-    const fare = m.farePed;
-    if (m.fareState === 'pickup') {
-      const at = step.at(G);
-      if (fare && fare.state !== 'dead' && near(at.x, at.y, 60) && p.car) {
-        m.fareState = 'dropoff';
-        fare.state = 'dead'; // riding with the player now
-        G.banner('Fare aboard — drive to the destination', '#7ee081');
-        G.audio.pickup();
-      } else if (fare && near(at.x, at.y, 60) && !p.car) {
-        m.dialog = 'The fare wants a ride — bring a car!';
-        m.dialogTimer = 2;
-      }
-    } else {
-      const dest = step.dest(G);
-      if (near(dest.x, dest.y, 70)) {
-        G.money += 40;
-        G.banner('Fare paid +$40', '#7ee081');
-        advance(G);
-      }
-    }
+      break;
+    case 5: // Big Score: vault, then escape 4 stars.
+      if (M.step === 0) { M.marker = { x: bank.x, y: bank.y, label: 'Bank vault' }; M.timer = 240; }
+      break;
   }
+}
+
+function deliverySpot(S, step) {
+  const spots = [
+    shopByKind(S.world, 'diner'), shopByKind(S.world, 'motel'), shopByKind(S.world, 'hospital'),
+  ];
+  const s = spots[step % spots.length];
+  return { x: s.x, y: s.y, label: 'Drop ' + (step + 1) + '/3' };
+}
+
+function spawnFare(S) {
+  const M = S.missions;
+  // A waiting ped near the player becomes the fare.
+  const ped = S.peds.find((p) => !p.dead && !p.fare);
+  if (!ped) return;
+  ped.fare = true;
+  ped.x = S.player.x + 140; ped.y = S.player.y + 80;
+  const dest = pickDest(S);
+  M.fares = [{ ped, dest, picked: false }];
+  M.marker = { x: ped.x, y: ped.y, label: 'Fare — pick up' };
+}
+
+function pickDest(S) {
+  const kinds = ['motel', 'diner', 'hospital', 'marina'];
+  const shop = shopByKind(S.world, kinds[Math.floor(S.rng() * 3)]);
+  return { x: shop.x + 60, y: shop.y + 60 };
+}
+
+export function completeMission(S) {
+  const M = S.missions;
+  const pay = TUNE.missionPayouts[M.index] || 200;
+  S.player.money += pay;
+  S.audio.cash();
+  M.banner = 'Mission complete — +$' + pay;
+  M.active = false; M.marker = null;
+  M.index++;
+  if (M.index >= BRIEFINGS.length) { M.won = true; S.screen = 'won'; S.audio.mission(); return; }
+  M.step = 0;
+  S.saveGame();
+}
+
+export function failMission(S, why) {
+  const M = S.missions;
+  M.active = false; M.marker = null; M.timer = 0;
+  M.banner = 'Mission failed — ' + why;
+  S.audio.fail();
+  // Restart the same mission on demand: the player presses Enter at the banner.
+  M.retry = true;
+}
+
+export function updateMissions(S, dt) {
+  const M = S.missions;
+  const p = S.player;
+  if (!M.active || M.won) return;
+  if (M.timer > 0) {
+    M.timer -= dt;
+    if (M.timer <= 0) { failMission(S, 'out of time'); return; }
+  }
+  const near = (m, r) => m && Math.hypot(p.x - m.x, p.y - m.y) < r;
+  switch (M.index) {
+    case 0:
+      if (M.step === 0 && p.inCar) { M.step = 1; setupMissionStep(S); }
+      else if (M.step === 1 && near(M.marker, 90)) completeMission(S);
+      break;
+    case 1:
+      if (near(M.marker, 80)) {
+        M.step++;
+        if (M.step >= 3) completeMission(S);
+        else { S.player.money += 40; setupMissionStep(S); }
+      }
+      break;
+    case 2: {
+      const fare = M.fares[0];
+      if (fare && !fare.picked && near({ x: fare.ped.x, y: fare.ped.y }, 60) && p.inCar) {
+        fare.picked = true; fare.ped.dead = true;
+        M.marker = { x: fare.dest.x, y: fare.dest.y, label: 'Drop the fare' };
+        M.banner = 'Fare aboard — drive to the marker';
+      } else if (fare && fare.picked && near(fare.dest, 80) && p.inCar) {
+        S.player.money += TUNE.taxiFare;
+        M.step++;
+        if (M.step >= 2) completeMission(S);
+        else { M.fares = []; spawnFare(S); }
+      }
+      break;
+    }
+    case 3:
+      if (M.step === 0 && p.wanted >= 3) { M.step = 1; M.banner = 'Now lose them!'; }
+      else if (M.step === 1 && p.wanted === 0) completeMission(S);
+      break;
+    case 4: {
+      const next = M.crates.find((c) => !c.taken);
+      if (next) {
+        M.marker = next;
+        if (near(next, 55) && !p.inCar) { next.taken = true; S.audio.pickup(); S.player.money += 25; }
+      } else {
+        M.marker = safehouseMarker(S);
+        if (near(M.marker, 90)) completeMission(S);
+      }
+      break;
+    }
+    case 5:
+      if (M.step === 0 && near(M.marker, 80)) {
+        M.step = 1; addWanted(S, 4); S.player.money += 300;
+        M.banner = 'Vault cracked! Lose 4 stars!';
+        M.marker = null;
+      } else if (M.step === 1 && p.wanted === 0) completeMission(S);
+      break;
+  }
+}
+
+function safehouseMarker(S) {
+  const s = shopByKind(S.world, 'safehouse');
+  return { x: s.x, y: s.y, label: 'Safehouse' };
+}
+
+export function missionObjective(S) {
+  const M = S.missions;
+  if (M.won) return 'King of Solmar Bay!';
+  if (!M.active) return 'Press Enter to start: ' + BRIEFINGS[M.index].title;
+  const steps = [
+    ['Steal a car', 'Drive to the Garage'],
+    ['Deliver package ' + (M.step + 1) + '/3', 'Deliver package ' + (M.step + 1) + '/3'],
+    ['Pick up the fare', 'Drop the fare'],
+    ['Get 3 stars', 'Lose the cops'],
+    ['Collect crates', 'Return to the Safehouse'],
+    ['Crack the bank vault', 'Escape 4 stars'],
+  ];
+  const t = M.timer > 0 ? ' — ' + Math.ceil(M.timer) + 's' : '';
+  return BRIEFINGS[M.index].title + ': ' + steps[M.index][Math.min(M.step, 1)] + t;
 }
